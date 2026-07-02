@@ -176,3 +176,86 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+async def run() -> int:
+    try:
+        cfg = Config.from_env()
+    except ValueError as e:
+        print(f"Configuration Error: {e}")
+        print("\nRequired environment variables:")
+        print("- API_ID")
+        print("- API_HASH")
+        print("- BOT_TOKEN")
+        return 1
+
+    setup_logging(cfg.log_file)
+    LOGGER = logging.getLogger(__name__)
+
+    LOGGER.info("Initializing clients...")
+    
+    bot = Client(
+        "vc_monitor_bot",
+        api_id=cfg.api_id,
+        api_hash=cfg.api_hash,
+        bot_token=cfg.bot_token
+    )
+    
+    # Only initialize user client if session_string is provided
+    user = None
+    if cfg.session_string:
+        user = Client(
+            "vc_monitor_user",
+            api_id=cfg.api_id,
+            api_hash=cfg.api_hash,
+            session_string=cfg.session_string
+        )
+        LOGGER.info("User client initialized with session string")
+    else:
+        LOGGER.warning("No SESSION_STRING provided - VC detection features will be disabled")
+        # Create a dummy user client that raises errors when used
+        user = Client(
+            "vc_monitor_user_dummy",
+            api_id=cfg.api_id,
+            api_hash=cfg.api_hash,
+            session_string="dummy"  # Will fail gracefully
+        )
+
+    # Start bot client (always needed)
+    LOGGER.info("Starting bot client...")
+    await bot.start()
+    
+    # Try to start user client if available
+    if cfg.session_string:
+        try:
+            LOGGER.info("Starting user client...")
+            await user.start()
+        except Exception as e:
+            LOGGER.error(f"User client failed to start: {e}")
+            user = None
+
+    # Initialize detector only if user client is available
+    detector = None
+    if user:
+        detector = VCDetector(
+            user_client=user,
+            scan_cooldown_seconds=cfg.scan_cooldown_seconds
+        )
+    else:
+        LOGGER.warning("VC Detector disabled - no user client")
+
+    # Initialize engine with safety check disabled
+    engine = AttackEngine(
+        max_threads=cfg.max_threads,
+        max_duration=cfg.max_duration,
+        safety_check=False
+    )
+
+    # Initialize handler with optional detector
+    handler = BotHandler(
+        bot=bot,
+        detector=detector,  # Can be None
+        engine=engine,
+        admin_id=cfg.admin_id,
+        max_duration=cfg.max_duration,
+        scan_limit=cfg.scan_limit,
+    )
+    handler.register_handlers()
